@@ -65,12 +65,12 @@ public class ClosureCompilerMojo extends AbstractMojo {
 		Compiler compiler = new Compiler();
 		Result result = compiler.compile(listJSSourceFiles(externsSourceDirectory), listJSSourceFiles(sourceDirectory), compilerOptions);
 
-		for (JSError error : result.warnings) {
-			getLog().warn(error.sourceName + '(' + error.lineNumber + ',' + error.getCharno() + ") : " + error.description);
+		for (JSError warning : result.warnings) {
+			getLog().warn(warning.toString());
 		}
 
 		for (JSError error : result.errors) {
-			getLog().error(error.sourceName + '(' + error.lineNumber + ',' + error.getCharno() + ") : " + error.description);
+			getLog().error(error.toString());
 		}
 
 		if (!result.success) {
