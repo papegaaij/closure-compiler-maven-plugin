@@ -14,6 +14,7 @@ import com.google.common.io.Files;
 import com.google.javascript.jscomp.CompilationLevel;
 import com.google.javascript.jscomp.Compiler;
 import com.google.javascript.jscomp.CompilerOptions;
+import com.google.javascript.jscomp.JSError;
 import com.google.javascript.jscomp.JSSourceFile;
 import com.google.javascript.jscomp.Result;
 
@@ -55,7 +56,7 @@ public class ClosureCompilerMojo extends AbstractMojo {
 		try {
 			compilationLevel = CompilationLevel.valueOf(this.compilationLevel);
 		} catch (IllegalArgumentException e) {
-			throw new MojoFailureException("Compilation level invalid !", e);
+			throw new MojoFailureException("Compilation level invalid", e);
 		}
 
 		CompilerOptions compilerOptions = new CompilerOptions();
@@ -63,8 +64,17 @@ public class ClosureCompilerMojo extends AbstractMojo {
 
 		Compiler compiler = new Compiler();
 		Result result = compiler.compile(listJSSourceFiles(externsSourceDirectory), listJSSourceFiles(sourceDirectory), compilerOptions);
+
+		for (JSError error : result.warnings) {
+			getLog().warn(error.sourceName + '(' + error.lineNumber + ',' + error.getCharno() + ") : " + error.description);
+		}
+
+		for (JSError error : result.errors) {
+			getLog().error(error.sourceName + '(' + error.lineNumber + ',' + error.getCharno() + ") : " + error.description);
+		}
+
 		if (!result.success) {
-			throw new MojoFailureException(result.debugLog);
+			throw new MojoFailureException("Compilation failure");
 		}
 
 		try {
