@@ -1,5 +1,4 @@
 .idea
-.settings
 .classpath
 .project
 closure-compiler-maven-plugin.iml
