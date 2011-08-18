@@ -16,7 +16,7 @@
 	<properties>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 		<maven.version>2.2.1</maven.version>
-		<closure-compiler.version>r946</closure-compiler.version>
+		<closure-compiler.version>r1352</closure-compiler.version>
 	</properties>
 
 	<dependencies>
