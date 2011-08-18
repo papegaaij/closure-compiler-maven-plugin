@@ -1,4 +1,4 @@
-package com.github.urmuzov.closurecompilermavenplugin;
+package nl.topicus.closurecompilermavenplugin;
 
 import java.io.File;
 import java.io.IOException;
@@ -9,8 +9,12 @@ import java.util.logging.Level;
 
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoFailureException;
+import org.apache.tools.ant.DirectoryScanner;
 
 import com.google.common.base.Charsets;
+import com.google.common.base.Function;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Lists;
 import com.google.common.io.Files;
 import com.google.javascript.jscomp.*;
 import com.google.javascript.jscomp.Compiler;
@@ -29,7 +33,7 @@ public class ClosureCompilerMojo extends AbstractMojo
 	private String loggingLevel;
 
 	/**
-	 * @parameter expression="WHITESPACE_ONLY"
+	 * @parameter expression="SIMPLE_OPTIMIZATIONS"
 	 * @required
 	 */
 	private String compilationLevel;
@@ -70,12 +74,25 @@ public class ClosureCompilerMojo extends AbstractMojo
 	 */
 	private File sourceDirectory;
 
+	// @formatter:off
 	/**
-	 * @parameter expression=
-	 *            "${project.build.directory}/${project.artifactId}-${project.version}/js/${project.artifactId}.js"
+	 * @parameter expression="${project.build.directory}/${project.artifactId}-${project.version}/js/${project.artifactId}.js"
 	 * @required
 	 */
 	private File outputFile;
+	// @formatter:on
+
+	/**
+	 * @parameter expression=true
+	 * @required
+	 */
+	private boolean merge;
+
+	/**
+	 * @parameter expression="${project.build.outputDirectory}"
+	 * @required
+	 */
+	private File outputDirectory;
 
 	/**
 	 * @parameter expression="false"
@@ -90,7 +107,7 @@ public class ClosureCompilerMojo extends AbstractMojo
 	private boolean logExternFiles;
 
 	/**
-	 * @parameter expression="false"
+	 * @parameter expression="true"
 	 * @required
 	 */
 	private boolean addDefaultExterns;
@@ -112,96 +129,57 @@ public class ClosureCompilerMojo extends AbstractMojo
 	{
 		CompilerOptions compilerOptions = new CompilerOptions();
 
-		CompilationLevel compilationLvl = null;
-		try
-		{
-			compilationLvl = CompilationLevel.valueOf(this.compilationLevel);
-			compilationLvl.setOptionsForCompilationLevel(compilerOptions);
-		}
-		catch (IllegalArgumentException e)
-		{
-			throw new MojoFailureException("Compilation level invalid (values: "
-				+ Arrays.asList(CompilationLevel.values()).toString() + ")", e);
-		}
-
-		WarningLevel warningLvl = null;
-		try
-		{
-			warningLvl = WarningLevel.valueOf(this.warningLevel);
-			warningLvl.setOptionsForWarningLevel(compilerOptions);
-		}
-		catch (IllegalArgumentException e)
-		{
-			throw new MojoFailureException("Warning level invalid (values: "
-				+ Arrays.asList(WarningLevel.values()).toString() + ")", e);
-		}
-
+		parseCompilationLevel(compilerOptions);
+		parseWarningLevel(compilerOptions);
 		compilerOptions.setManageClosureDependencies(manageClosureDependencies);
-
 		compilerOptions.setGenerateExports(generateExports);
+		parseFormattingOptions(compilerOptions);
+		parseLoggingLevel();
 
-		FormattingOption formattingOption = null;
-		if (this.formatting != null && !this.formatting.equals("null"))
-		{
-			try
-			{
-				formattingOption = FormattingOption.valueOf(this.formatting);
-				formattingOption.applyToOptions(compilerOptions);
-			}
-			catch (IllegalArgumentException e)
-			{
-				throw new MojoFailureException("Formatting invalid (values: "
-					+ Arrays.asList(FormattingOption.values()).toString() + ")", e);
-			}
-		}
+		List<JSSourceFile> externs = parseExterns();
+		List<String> sources = parseSources();
 
-		Compiler compiler = new Compiler();
-
-		Level loggingLvl = null;
 		try
 		{
-			loggingLvl = Level.parse(this.loggingLevel);
-			Compiler.setLoggingLevel(loggingLvl);
+			if (merge)
+			{
+				String source =
+					compile(compilerOptions, externs,
+						filenamesToSourceFiles(sourceDirectory, sources));
+				Files.createParentDirs(outputFile);
+				Files.touch(outputFile);
+				Files.write(source, outputFile, Charsets.UTF_8);
+			}
+			else
+			{
+				for (String curSourceFile : sources)
+				{
+					String source =
+						compile(compilerOptions, externs, ImmutableList.of(JSSourceFile
+							.fromFile(new File(sourceDirectory, curSourceFile))));
+					File curOuputFile = sourceToDest(curSourceFile);
+					Files.createParentDirs(curOuputFile);
+					Files.touch(curOuputFile);
+					Files.write(source, curOuputFile, Charsets.UTF_8);
+				}
+			}
 		}
-		catch (IllegalArgumentException e)
+		catch (IOException e)
 		{
-			throw new MojoFailureException(
-				"Logging level invalid (values: [ALL, CONFIG, FINE, FINER, FINEST, INFO, OFF, SEVERE, WARNING])",
-				e);
+			throw new MojoFailureException(e.getMessage(), e);
 		}
+	}
 
-		List<JSSourceFile> externs = new ArrayList<JSSourceFile>();
-		if (addDefaultExterns)
-		{
-			try
-			{
-				externs.addAll(CommandLineRunner.getDefaultExterns());
-			}
-			catch (IOException ex)
-			{
-				throw new MojoFailureException("Default externs adding error");
-			}
-		}
-		externs.addAll(listJSSourceFiles(externsSourceDirectory));
-		if (logExternFiles)
-		{
-			getLog().info("Extern files:");
-			for (JSSourceFile f : externs)
-			{
-				getLog().info(f.getOriginalPath());
-			}
-		}
+	private File sourceToDest(String sourceFile)
+	{
+		return new File(outputDirectory, sourceFile.substring(0, sourceFile.length() - 3)
+			+ ".min.js");
+	}
 
-		List<JSSourceFile> sources = listJSSourceFiles(sourceDirectory);
-		if (logSourceFiles)
-		{
-			getLog().info("Source files:");
-			for (JSSourceFile f : sources)
-			{
-				getLog().info(f.getOriginalPath());
-			}
-		}
-
+	protected String compile(CompilerOptions compilerOptions, List<JSSourceFile> externs,
+			List<JSSourceFile> sources) throws MojoFailureException
+	{
+		Compiler compiler = new Compiler();
 		Result result = compiler.compile(externs, sources, compilerOptions);
 
 		boolean hasWarnings = false;
@@ -230,26 +208,152 @@ public class ClosureCompilerMojo extends AbstractMojo
 		{
 			throw new MojoFailureException("Compilation failure");
 		}
+		String source = compiler.toSource();
+		return source;
+	}
 
+	protected void parseCompilationLevel(CompilerOptions compilerOptions)
+			throws MojoFailureException
+	{
+		CompilationLevel compilationLvl = null;
 		try
 		{
-			Files.createParentDirs(outputFile);
-			Files.touch(outputFile);
-			Files.write(compiler.toSource(), outputFile, Charsets.UTF_8);
+			compilationLvl = CompilationLevel.valueOf(this.compilationLevel);
+			compilationLvl.setOptionsForCompilationLevel(compilerOptions);
 		}
-		catch (IOException e)
+		catch (IllegalArgumentException e)
 		{
-			throw new MojoFailureException(outputFile != null ? outputFile.toString()
-				: e.getMessage(), e);
+			throw new MojoFailureException("Compilation level invalid (values: "
+				+ Arrays.asList(CompilationLevel.values()).toString() + ")", e);
 		}
 	}
 
-	private List<JSSourceFile> listJSSourceFiles(File directory)
+	protected void parseWarningLevel(CompilerOptions compilerOptions) throws MojoFailureException
 	{
-		return listJSSourceFiles(new ArrayList<JSSourceFile>(), directory);
+		WarningLevel warningLvl = null;
+		try
+		{
+			warningLvl = WarningLevel.valueOf(this.warningLevel);
+			warningLvl.setOptionsForWarningLevel(compilerOptions);
+		}
+		catch (IllegalArgumentException e)
+		{
+			throw new MojoFailureException("Warning level invalid (values: "
+				+ Arrays.asList(WarningLevel.values()).toString() + ")", e);
+		}
 	}
 
-	private List<JSSourceFile> listJSSourceFiles(List<JSSourceFile> jsSourceFiles, File directory)
+	protected void parseFormattingOptions(CompilerOptions compilerOptions)
+			throws MojoFailureException
+	{
+		FormattingOption formattingOption = null;
+		if (this.formatting != null && !this.formatting.equals("null"))
+		{
+			try
+			{
+				formattingOption = FormattingOption.valueOf(this.formatting);
+				formattingOption.applyToOptions(compilerOptions);
+			}
+			catch (IllegalArgumentException e)
+			{
+				throw new MojoFailureException("Formatting invalid (values: "
+					+ Arrays.asList(FormattingOption.values()).toString() + ")", e);
+			}
+		}
+	}
+
+	protected void parseLoggingLevel() throws MojoFailureException
+	{
+		Level loggingLvl = null;
+		try
+		{
+			loggingLvl = Level.parse(this.loggingLevel);
+			Compiler.setLoggingLevel(loggingLvl);
+		}
+		catch (IllegalArgumentException e)
+		{
+			throw new MojoFailureException(
+				"Logging level invalid (values: [ALL, CONFIG, FINE, FINER, FINEST, INFO, OFF, SEVERE, WARNING])",
+				e);
+		}
+	}
+
+	protected List<JSSourceFile> parseExterns() throws MojoFailureException
+	{
+		List<JSSourceFile> externs = new ArrayList<JSSourceFile>();
+		if (addDefaultExterns)
+		{
+			try
+			{
+				externs.addAll(CommandLineRunner.getDefaultExterns());
+			}
+			catch (IOException ex)
+			{
+				throw new MojoFailureException("Default externs adding error");
+			}
+		}
+		externs.addAll(filesToSourceFiles(listFiles(externsSourceDirectory)));
+		if (logExternFiles)
+		{
+			getLog().info("Extern files:");
+			for (JSSourceFile f : externs)
+			{
+				getLog().info(f.getOriginalPath());
+			}
+		}
+		return externs;
+	}
+
+	protected List<String> parseSources()
+	{
+		DirectoryScanner scanner = new DirectoryScanner();
+		scanner.setBasedir(sourceDirectory);
+		scanner.setIncludes(new String[] {"**/*.js"});
+		scanner.addDefaultExcludes();
+		scanner.scan();
+
+		List<String> sources = ImmutableList.copyOf(scanner.getIncludedFiles());
+		if (logSourceFiles)
+		{
+			getLog().info("Source files:");
+			for (String f : sources)
+			{
+				getLog().info(f);
+			}
+		}
+		return sources;
+	}
+
+	private List<JSSourceFile> filesToSourceFiles(List<File> files)
+	{
+		return Lists.transform(files, new Function<File, JSSourceFile>()
+		{
+			@Override
+			public JSSourceFile apply(File input)
+			{
+				return JSSourceFile.fromFile(input);
+			}
+		});
+	}
+
+	private List<JSSourceFile> filenamesToSourceFiles(final File path, List<String> filenames)
+	{
+		return Lists.transform(filenames, new Function<String, JSSourceFile>()
+		{
+			@Override
+			public JSSourceFile apply(String input)
+			{
+				return JSSourceFile.fromFile(new File(path, input));
+			}
+		});
+	}
+
+	private List<File> listFiles(File directory)
+	{
+		return listFiles(new ArrayList<File>(), directory);
+	}
+
+	private List<File> listFiles(List<File> jsSourceFiles, File directory)
 	{
 		if (directory != null)
 		{
@@ -262,12 +366,12 @@ public class ClosureCompilerMojo extends AbstractMojo
 					{
 						if (file.getName().endsWith(".js"))
 						{
-							jsSourceFiles.add(JSSourceFile.fromFile(file));
+							jsSourceFiles.add(file);
 						}
 					}
 					else
 					{
-						listJSSourceFiles(jsSourceFiles, file);
+						listFiles(jsSourceFiles, file);
 					}
 				}
 			}
